@@ -449,7 +449,7 @@ bool SdSpiCard::isTimedOut(uint16_t startMS, uint16_t timeoutMS) {
   return (curTimeMS() - startMS) > timeoutMS;
 }
 //------------------------------------------------------------------------------
-bool SdSpiCard::readBlock(uint32_t blockNumber, uint8_t* dst) {
+future::future<bool> SdSpiCard::readBlock(uint32_t blockNumber, uint8_t* dst) {
   SD_TRACE("RB", blockNumber);
   // use address if not SDHC card
   if (type() != SD_CARD_TYPE_SDHC) {
@@ -457,36 +457,46 @@ bool SdSpiCard::readBlock(uint32_t blockNumber, uint8_t* dst) {
   }
   if (cardCommand(CMD17, blockNumber)) {
     error(SD_CARD_ERROR_CMD17);
-    goto fail;
+    return future::make_ready_future<bool>(false);
   }
-  if (!readData(dst, 512)) {
-    goto fail;
-  }
-  spiStop();
-  return true;
-
-fail:
-  spiStop();
-  return false;
+  return readData(dst, 512).then([this](future::future<bool> f) {
+    spiStop();
+    return f;
+  });
 }
 //------------------------------------------------------------------------------
-bool SdSpiCard::readBlocks(uint32_t block, uint8_t* dst, size_t count) {
+future::future<bool> SdSpiCard::readBlocks(uint32_t block, uint8_t* dst, size_t count) {
   if (!readStart(block)) {
-    return false;
+    return future::make_ready_future<bool>(false);
   }
+  future::future<bool> cur = future::make_ready_future<bool>(true);
   for (uint16_t b = 0; b < count; b++, dst += 512) {
-    if (!readData(dst, 512)) {
-      return false;
+    if (cur.is_done()) {
+      if (!cur.get()) {
+        return future::make_ready_future<bool>(false);
+      }
+      cur = future::make_ready_future<bool>(true);
     }
+    cur = cur.then([this, dst](future::future<bool> f) {
+      if (!f.get()) return future::make_ready_future<bool>(false);
+      return readData(dst, 512);
+    });
   }
-  return readStop();
+  if (cur.is_done()) {
+    return future::make_ready_future<bool>(cur.get());
+  } else {
+    return cur.then([this](future::future<bool> f) {
+      if (!f.get()) return future::make_ready_future<bool>(false);
+      return future::make_ready_future<bool>(readStop());
+    });
+  }
 }
 //------------------------------------------------------------------------------
-bool SdSpiCard::readData(uint8_t *dst) {
+future::future<bool> SdSpiCard::readData(uint8_t *dst) {
   return readData(dst, 512);
 }
 //------------------------------------------------------------------------------
-bool SdSpiCard::readData(uint8_t* dst, size_t count) {
+future::future<bool> SdSpiCard::readData(uint8_t* dst, size_t count) {
 #if USE_SD_CRC
   uint16_t crc;
 #endif  // USE_SD_CRC
@@ -505,28 +515,32 @@ bool SdSpiCard::readData(uint8_t* dst, size_t count) {
     goto fail;
   }
   // transfer data
-  if ((m_status = spiReceive(dst, count))) {
-    error(SD_CARD_ERROR_DMA);
-    goto fail;
-  }
-
+  return spiReceive(dst, count).then([this, dst, count](future::future<uint8_t> f) {
+    m_status = f.get();
+    if (m_status != 0) {
+      error(SD_CARD_ERROR_DMA);
+      spiStop();
+      return future::make_ready_future<bool>(false);
+    }
 #if USE_SD_CRC
-  // get crc
-  crc = (spiReceive() << 8) | spiReceive();
-  if (crc != CRC_CCITT(dst, count)) {
-    error(SD_CARD_ERROR_READ_CRC);
-    goto fail;
-  }
+    // get crc
+    crc = (spiReceive() << 8) | spiReceive();
+    if (crc != CRC_CCITT(dst, count)) {
+      error(SD_CARD_ERROR_READ_CRC);
+      spiStop();
+      return future::make_ready_future<bool>(false);
+    }
 #else
-  // discard crc
-  spiReceive();
-  spiReceive();
+    // discard crc
+    spiReceive();
+    spiReceive();
 #endif  // USE_SD_CRC
-  return true;
+    return future::make_ready_future<bool>(true);
+  });
 
 fail:
   spiStop();
-  return false;
+  return future::make_ready_future<bool>(false);
 }
 //------------------------------------------------------------------------------
 bool SdSpiCard::readOCR(uint32_t* ocr) {
@@ -554,7 +568,7 @@ bool SdSpiCard::readRegister(uint8_t cmd, void* buf) {
     error(SD_CARD_ERROR_READ_REG);
     goto fail;
   }
-  if (!readData(dst, 16)) {
+  if (!readData(dst, 16).get()) {
     goto fail;
   }
   spiStop();
@@ -588,7 +602,7 @@ bool SdSpiCard::readStatus(uint8_t* status) {
     error(SD_CARD_ERROR_ACMD13);
     goto fail;
   }
-  if (!readData(status, 64)) {
+  if (!readData(status, 64).get()) {
     goto fail;
   }
   spiStop();

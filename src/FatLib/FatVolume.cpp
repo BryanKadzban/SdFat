@@ -22,30 +22,31 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include "../Future.h"
 #include <string.h>
 #include "FatVolume.h"
 //------------------------------------------------------------------------------
-cache_t* FatCache::read(uint32_t lbn, uint8_t option) {
-  if (m_lbn != lbn) {
-    if (!sync()) {
-      DBG_FAIL_MACRO;
-      goto fail;
-    }
-    if (!(option & CACHE_OPTION_NO_READ)) {
-      if (!m_vol->readBlock(lbn, m_block.data)) {
-        DBG_FAIL_MACRO;
-        goto fail;
-      }
-    }
-    m_status = 0;
-    m_lbn = lbn;
+future::future<cache_t*> FatCache::read(uint32_t lbn, uint8_t option) {
+  if (m_lbn == lbn) {
+    m_status |= option & CACHE_STATUS_MASK;
+    return future::make_ready_future<cache_t*>(&m_block);
   }
-  m_status |= option & CACHE_STATUS_MASK;
-  return &m_block;
-
-fail:
-
-  return 0;
+  if (!sync()) {
+    DBG_FAIL_MACRO;
+    return future::make_ready_future<cache_t*>(nullptr);
+  }
+  return ((option & CACHE_OPTION_NO_READ) ?
+    future::make_ready_future<bool>(true) :
+    m_vol->readBlock(lbn, m_block.data))
+  .then([this, option, lbn](future::future<bool> f) {
+    if (!f.get()) {
+      DBG_FAIL_MACRO;
+      return future::make_ready_future<cache_t*>(nullptr);
+    }
+    m_status = option & CACHE_STATUS_MASK;
+    m_lbn = lbn;
+    return future::make_ready_future<cache_t*>(&m_block);
+  });
 }
 //------------------------------------------------------------------------------
 bool FatCache::sync() {
@@ -223,9 +224,13 @@ int8_t FatVolume::fatGet(uint32_t cluster, uint32_t* value) {
     goto fail;
   }
 
+  // NB: Not going async in this function, for two reasons.
+  // First, the function has two return values (the int8_t for ok/eoc/error).
+  // Second, fatGet handles the metadata, so doing the work synchronously is
+  // actually OK.  We care most about having async support for data access.
   if (fatType() == 32) {
     lba = m_fatStartBlock + (cluster >> 7);
-    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_READ);
+    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_READ).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -235,7 +240,7 @@ int8_t FatVolume::fatGet(uint32_t cluster, uint32_t* value) {
   }
   if (fatType() == 16) {
     lba = m_fatStartBlock + ((cluster >> 8) & 0XFF);
-    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_READ);
+    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_READ).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -247,7 +252,7 @@ int8_t FatVolume::fatGet(uint32_t cluster, uint32_t* value) {
     uint16_t index = cluster;
     index += index >> 1;
     lba = m_fatStartBlock + (index >> 9);
-    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_READ);
+    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_READ).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -256,7 +261,7 @@ int8_t FatVolume::fatGet(uint32_t cluster, uint32_t* value) {
     uint16_t tmp = pc->data[index];
     index++;
     if (index == 512) {
-      pc = cacheFetchFat(lba + 1, FatCache::CACHE_FOR_READ);
+      pc = cacheFetchFat(lba + 1, FatCache::CACHE_FOR_READ).get();
       if (!pc) {
         DBG_FAIL_MACRO;
         goto fail;
@@ -292,9 +297,13 @@ bool FatVolume::fatPut(uint32_t cluster, uint32_t value) {
     goto fail;
   }
 
+  // NB: Not going async in this function.
+  // fatPut handles metadata -- moreover, handles *writing* it -- so doing the
+  // work synchronously is actually OK.  We care most about having async support
+  // for data reads.
   if (fatType() == 32) {
     lba = m_fatStartBlock + (cluster >> 7);
-    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE);
+    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -305,7 +314,7 @@ bool FatVolume::fatPut(uint32_t cluster, uint32_t value) {
 
   if (fatType() == 16) {
     lba = m_fatStartBlock + ((cluster >> 8) & 0XFF);
-    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE);
+    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -318,7 +327,7 @@ bool FatVolume::fatPut(uint32_t cluster, uint32_t value) {
     uint16_t index = cluster;
     index += index >> 1;
     lba = m_fatStartBlock + (index >> 9);
-    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE);
+    pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -334,7 +343,7 @@ bool FatVolume::fatPut(uint32_t cluster, uint32_t value) {
     if (index == 512) {
       lba++;
       index = 0;
-      pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE);
+      pc = cacheFetchFat(lba, FatCache::CACHE_FOR_WRITE).get();
       if (!pc) {
         DBG_FAIL_MACRO;
         goto fail;
@@ -411,7 +420,7 @@ int32_t FatVolume::freeClusterCount() {
   } else if (fatType() == 16 || fatType() == 32) {
     lba = m_fatStartBlock;
     while (todo) {
-      cache_t* pc = cacheFetchFat(lba++, FatCache::CACHE_FOR_READ);
+      cache_t* pc = cacheFetchFat(lba++, FatCache::CACHE_FOR_READ).get();
       if (!pc) {
         DBG_FAIL_MACRO;
         goto fail;
@@ -467,7 +476,8 @@ bool FatVolume::init(uint8_t part) {
       DBG_FAIL_MACRO;
       goto fail;
     }
-    pc = cacheFetchData(0, FatCache::CACHE_FOR_READ);
+    // NB: synchronous reads are fine during initialization
+    pc = cacheFetchData(0, FatCache::CACHE_FOR_READ).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -480,7 +490,8 @@ bool FatVolume::init(uint8_t part) {
     }
     volumeStartBlock = p->firstSector;
   }
-  pc = cacheFetchData(volumeStartBlock, FatCache::CACHE_FOR_READ);
+  // NB: synchronous reads are fine during initialization
+  pc = cacheFetchData(volumeStartBlock, FatCache::CACHE_FOR_READ).get();
   if (!pc) {
     DBG_FAIL_MACRO;
     goto fail;

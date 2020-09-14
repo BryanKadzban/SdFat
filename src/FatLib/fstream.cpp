@@ -27,7 +27,7 @@
 /// @cond SHOW_PROTECTED
 int16_t FatStreamBase::getch() {
   uint8_t c;
-  int8_t s = read(&c, 1);
+  int8_t s = read(&c, 1).get();
   if (s != 1) {
     if (s < 0) {
       setstate(badbit);
@@ -39,7 +39,7 @@ int16_t FatStreamBase::getch() {
   if (c != '\r' || (getmode() & ios::binary)) {
     return c;
   }
-  s = read(&c, 1);
+  s = read(&c, 1).get();
   if (s == 1 && c == '\n') {
     return c;
   }

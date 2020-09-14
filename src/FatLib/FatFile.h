@@ -28,6 +28,7 @@
  * \file
  * \brief FatFile class
  */
+#include "../Future.h"
 // #include <ctype.h>
 #include <string.h>
 #include <stddef.h>
@@ -696,7 +697,7 @@ class FatFile {
    */
   int read() {
     uint8_t b;
-    return read(&b, 1) == 1 ? b : -1;
+    return read(&b, 1).get() == 1 ? b : -1;
   }
   /** Read data from a file starting at the current position.
    *
@@ -711,7 +712,7 @@ class FatFile {
    * read() called before a file has been opened, corrupt file system
    * or an I/O error occurred.
    */
-  int read(void* buf, size_t nbyte);
+  future::future<int> read(void* buf, size_t nbyte);
   /** Read the next directory entry from a directory file.
    *
    * \param[out] dir The dir_t struct that will receive the data.

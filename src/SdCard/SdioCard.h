@@ -24,6 +24,7 @@
  */
 #ifndef SdioCard_h
 #define SdioCard_h
+#include "../Future.h"
 #include "SysCall.h"
 #include "BlockDriver.h"
 /**
@@ -83,7 +84,7 @@ class SdioCard : public BaseBlockDriver {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlock(uint32_t lba, uint8_t* dst);
+  future::future<bool> readBlock(uint32_t lba, uint8_t* dst);
   /**
    * Read multiple 512 byte blocks from an SD card.
    *
@@ -93,7 +94,7 @@ class SdioCard : public BaseBlockDriver {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlocks(uint32_t lba, uint8_t* dst, size_t nb);
+  future::future<bool> readBlocks(uint32_t lba, uint8_t* dst, size_t nb);
   /**
    * Read a card's CID register. The CID contains card identification
    * information such as Manufacturer ID, Product name, Product serial
@@ -120,7 +121,7 @@ class SdioCard : public BaseBlockDriver {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readData(uint8_t *dst);
+  future::future<bool> readData(uint8_t *dst);
   /** Read OCR register.
    *
    * \param[out] ocr Value of OCR register.
@@ -256,7 +257,7 @@ class SdioCardEX : public SdioCard {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlock(uint32_t block, uint8_t* dst);
+  future::future<bool> readBlock(uint32_t block, uint8_t* dst);
   /** End multi-block transfer and go to idle state.
    * \return The value true is returned for success and
    * the value false is returned for failure.
@@ -280,7 +281,7 @@ class SdioCardEX : public SdioCard {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlocks(uint32_t block, uint8_t* dst, size_t nb);
+  future::future<bool> readBlocks(uint32_t block, uint8_t* dst, size_t nb);
   /**
    * Write multiple 512 byte blocks to an SD card.
    *

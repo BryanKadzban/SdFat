@@ -23,6 +23,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #if defined(ESP8266)
+#include "../Future.h"
 #include "SdSpiDriver.h"
 //------------------------------------------------------------------------------
 /** Initialize the SPI bus.
@@ -63,7 +64,7 @@ uint8_t SdSpiAltDriver::receive() {
  *
  * \return Zero for no error or nonzero error code.
  */
-uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
+future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   // Adjust to 32-bit alignment.
   while ((reinterpret_cast<uintptr_t>(buf) & 0X3) && n) {
     *buf++ = SPI.transfer(0xff);
@@ -77,7 +78,7 @@ uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   for (buf += n4, n -= n4; n; n--) {
     *buf++ = SPI.transfer(0xff);
   }
-  return 0;
+  return future::make_ready_future<uint8_t>(0);
 }
 //------------------------------------------------------------------------------
 /** Send a byte.

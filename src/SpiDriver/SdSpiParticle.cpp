@@ -23,6 +23,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #if defined(PLATFORM_ID)
+#include "../Future.h"
 #include "SdSpiDriver.h"
 static volatile bool SPI_DMA_TransferCompleted = false;
 //-----------------------------------------------------------------------------
@@ -69,13 +70,18 @@ uint8_t SdSpiAltDriver::receive() {
  * \param[out] buf Buffer to receive the data.
  * \param[in] n Number of bytes to receive.
  *
- * \return Zero for no error or nonzero error code.
+ * \return future returning zero for no error or nonzero error code.
  */
-uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
+future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   SPI_DMA_TransferCompleted = false;
   m_spi->transfer(nullptr, buf, n, SD_SPI_DMA_TransferComplete_Callback);
-  while (!SPI_DMA_TransferCompleted) {}
-  return 0;
+  //while (!SPI_DMA_TransferCompleted) {}
+  future::future<uint8_t> fut;
+  fut.set_done_callback([](future::future<uint8_t>* f) {
+                  if (SPI_DMA_TransferCompleted) { f->set_value(0); return true; }
+                  return false;
+                });
+  return fut;
 }
 //------------------------------------------------------------------------------
 /** Send a byte.

@@ -449,7 +449,8 @@ bool StdioStream::fillBuf() {
     }
   }
   m_p = m_buf + UNGETC_BUF_SIZE;
-  int nr = FatFile::read(m_p, sizeof(m_buf) - UNGETC_BUF_SIZE);
+  // NB: this has to be synchronous since stdio doens't provide async
+  int nr = FatFile::read(m_p, sizeof(m_buf) - UNGETC_BUF_SIZE).get();
   if (nr <= 0) {
     m_status |= nr < 0 ? S_ERR : S_EOF;
     m_r = 0;

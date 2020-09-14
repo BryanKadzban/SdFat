@@ -23,6 +23,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #if defined(__STM32F1__) || defined(__STM32F4__)
+#include "../Future.h"
 #include "SdSpiDriver.h"
 #if defined(__STM32F1__)
 #define USE_STM32_DMA 1
@@ -73,12 +74,14 @@ uint8_t SdSpiAltDriver::receive() {
  *
  * \return Zero for no error or nonzero error code.
  */
-uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
+future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
 #if USE_STM32_DMA
-  return m_spi->dmaTransfer(nullptr, buf, n);
+  // The dmaTransfer API does not allow async client code.  :-/
+  uint8_t res = m_spi->dmaTransfer(nullptr, buf, n);
+  return make_ready_future<uint8_t>(res);
 #else  // USE_STM32_DMA
   m_spi->read(buf, n);
-  return 0;
+  return make_ready_future<uint8_t>(0);
 #endif  // USE_STM32_DMA
 }
 //------------------------------------------------------------------------------

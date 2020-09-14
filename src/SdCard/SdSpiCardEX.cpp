@@ -22,32 +22,37 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include "../Future.h"
 #include "SdSpiCard.h"
-bool SdSpiCardEX::readBlock(uint32_t block, uint8_t* dst) {
+future::future<bool> SdSpiCardEX::readBlock(uint32_t block, uint8_t* dst) {
   if (m_curState != READ_STATE || block != m_curBlock) {
     if (!syncBlocks()) {
-      return false;
+      return future::make_ready_future<bool>(false);
     }
     if (!SdSpiCard::readStart(block)) {
-      return false;
+      return future::make_ready_future<bool>(false);
     }
     m_curBlock = block;
     m_curState = READ_STATE;
   }
-  if (!SdSpiCard::readData(dst)) {
-    return false;
-  }
-  m_curBlock++;
-  return true;
+  return SdSpiCard::readData(dst).then([this](future::future<bool> f) {
+    if (f.get()) m_curBlock++;
+    return f;
+  });
 }
 //-----------------------------------------------------------------------------
-bool SdSpiCardEX::readBlocks(uint32_t block, uint8_t* dst, size_t nb) {
+future::future<bool> SdSpiCardEX::readBlocks(uint32_t block, uint8_t* dst, size_t nb) {
+  future::future<bool> cur = future::make_ready_future<bool>(true);
   for (size_t i = 0; i < nb; i++) {
-    if (!readBlock(block + i, dst + i*512UL)) {
-      return false;
+    if (cur.is_done() && !cur.get()) {
+      return future::make_ready_future<bool>(false);
     }
+    cur = cur.then([this, dst, block, i](future::future<bool> f) {
+      if (!f.get()) return future::make_ready_future<bool>(false);
+      return readBlock(block + i, dst + i*512UL);
+    });
   }
-  return true;
+  return cur;
 }
 //-----------------------------------------------------------------------------
 bool SdSpiCardEX::syncBlocks() {

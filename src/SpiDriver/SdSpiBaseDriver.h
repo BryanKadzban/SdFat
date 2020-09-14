@@ -24,6 +24,7 @@
  */
 #ifndef SdSpiBaseDriver_h
 #define SdSpiBaseDriver_h
+#include "../Future.h"
 /**
  * \class SdSpiBaseDriver
  * \brief SPI base driver.
@@ -53,9 +54,9 @@ class SdSpiBaseDriver {
    * \param[out] buf Buffer to receive the data.
    * \param[in] n Number of bytes to receive.
    *
-   * \return Zero for no error or nonzero error code.
+   * \return Future returning zero for no error or nonzero error code.
    */
-  virtual uint8_t receive(uint8_t* buf, size_t n) = 0;
+  virtual future::future<uint8_t> receive(uint8_t* buf, size_t n) = 0;
   /** Send a byte.
    *
    * \param[in] data Byte to send

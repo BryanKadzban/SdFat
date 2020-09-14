@@ -23,6 +23,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 #if defined(__MK64FX512__) || defined(__MK66FX1M0__)
+#include "../Future.h"
 #include "SdioCard.h"
 //==============================================================================
 #define SDHC_PROCTL_DTW_4BIT 0x01
@@ -329,8 +330,8 @@ static bool isBusyTransferComplete() {
   return !(SDHC_IRQSTAT & (SDHC_IRQSTAT_TC | SDHC_IRQSTAT_ERROR));
 }
 //-----------------------------------------------------------------------------
-static bool rdWrBlocks(uint32_t xfertyp,
-                       uint32_t lba, uint8_t* buf, size_t n) {
+static future::future<bool> rdWrBlocks(uint32_t xfertyp,
+                                       uint32_t lba, uint8_t* buf, size_t n) {
   if ((3 & (uint32_t)buf) || n == 0) {
     return sdError(SD_CARD_ERROR_DMA);
   }
@@ -344,7 +345,7 @@ static bool rdWrBlocks(uint32_t xfertyp,
   SDHC_IRQSIGEN = SDHC_IRQSIGEN_MASK;
   SDHC_XFERTYP = xfertyp;
 
-  return waitDmaStatus();
+  return dmaStatusFuture();
 }
 //-----------------------------------------------------------------------------
 // Read 16 byte CID or CSD register.
@@ -438,6 +439,17 @@ static bool waitDmaStatus() {
     return false;  // Caller will set errorCode.
   }
   return (m_irqstat & SDHC_IRQSTAT_TC) && !(m_irqstat & SDHC_IRQSTAT_ERROR);
+}
+static future::future<bool> dmaStatusFuture() {
+  future::future<bool> fut;
+  fut.set_done_callback([](future::future<bool>* f) {
+    if (!isBusyDMA()) {
+      f->set_value((m_irqstat & SDHC_IRQSTAT_TC) && !(m_irqstat & SDHC_IRQSTAT_ERROR));
+      return true;
+    }
+    return false;
+  });
+  return fut;
 }
 //-----------------------------------------------------------------------------
 // Return true if timeout occurs.
@@ -589,33 +601,47 @@ uint32_t SdioCard::kHzSdClk() {
   return m_sdClkKhz;
 }
 //-----------------------------------------------------------------------------
-bool SdioCard::readBlock(uint32_t lba, uint8_t* buf) {
+future::future<bool> SdioCard::readBlock(uint32_t lba, uint8_t* buf) {
   uint8_t aligned[512];
 
   uint8_t* ptr = (uint32_t)buf & 3 ? aligned : buf;
 
-  if (!rdWrBlocks(CMD17_DMA_XFERTYP, lba, ptr, 1)) {
-    return sdError(SD_CARD_ERROR_CMD18);
-  }
-  if (ptr != buf) {
-    memcpy(buf, aligned, 512);
-  }
-  return true;
+  return rdWrBlocks(CMD17_DMA_XFERTYP, lba, ptr, 1)
+    .then([buf, aligned, ptr](future::future<bool> f) {
+      if (!f.get()) {
+        return future::make_ready_future<bool>(sdError(SD_CARD_ERROR_CMD18));
+      }
+      if (ptr != buf) {
+        memcpy(buf, aligned, 512);
+      }
+      return future::make_ready_future<bool>(true);
+    });
 }
 //-----------------------------------------------------------------------------
-bool SdioCard::readBlocks(uint32_t lba, uint8_t* buf, size_t n) {
+future::future<bool> SdioCard::readBlocks(uint32_t lba, uint8_t* buf, size_t n) {
   if ((uint32_t)buf & 3) {
+    future::future<bool> cur = future::make_ready_future<bool>(true);
     for (size_t i = 0; i < n; i++, lba++, buf += 512) {
-      if (!readBlock(lba, buf)) {
-        return false;  // readBlock will set errorCode.
+      if (cur.is_done() && !cur.get()) {
+        return future::make_ready_future<bool>(false);
       }
+      cur = cur.then([lba, buf](future::future<bool> f) {
+        if (!f.get()) {
+          // readBlock will have set errorCode.
+          return future::make_ready_future<bool>(false);
+        }
+        return readBlock(lba, buf);
+      });
     }
-    return true;
+    return cur;
   }
-  if (!rdWrBlocks(CMD18_DMA_XFERTYP, lba, buf, n)) {
-    return sdError(SD_CARD_ERROR_CMD18);
-  }
-  return true;
+  return rdWrBlocks(CMD18_DMA_XFERTYP, lba, buf, n)
+    .then([](future::future<bool> f) {
+      if (!f.get()) {
+        return future::make_ready_future<bool>(sdError(SD_CARD_ERROR_CMD18));
+      }
+      return f;
+    });
 }
 //-----------------------------------------------------------------------------
 bool SdioCard::readCID(void* cid) {
@@ -628,7 +654,7 @@ bool SdioCard::readCSD(void* csd) {
   return true;
 }
 //-----------------------------------------------------------------------------
-bool SdioCard::readData(uint8_t *dst) {
+future::future<bool> SdioCard::readData(uint8_t *dst) {
   DBG_IRQSTAT();
   uint32_t *p32 = reinterpret_cast<uint32_t*>(dst);
 
@@ -644,8 +670,9 @@ bool SdioCard::readData(uint8_t *dst) {
       interrupts();
     }
   }
+  // FIXME: async?
   if (waitTimeout(isBusyFifoRead)) {
-    return sdError(SD_CARD_ERROR_READ_FIFO);
+    return future::make_ready_future<bool>(sdError(SD_CARD_ERROR_READ_FIFO));
   }
   for (uint32_t iw = 0 ; iw < 512/(4*FIFO_WML); iw++) {
     while (0 == (SDHC_PRSSTAT & SDHC_PRSSTAT_BREN)) {
@@ -656,11 +683,11 @@ bool SdioCard::readData(uint8_t *dst) {
     p32 += FIFO_WML;
   }
   if (waitTimeout(isBusyTransferComplete)) {
-    return sdError(SD_CARD_ERROR_READ_TIMEOUT);
+    return future::make_ready_future<bool>(sdError(SD_CARD_ERROR_READ_TIMEOUT));
   }
   m_irqstat = SDHC_IRQSTAT;
   SDHC_IRQSTAT = m_irqstat;
-  return (m_irqstat & SDHC_IRQSTAT_TC) && !(m_irqstat & SDHC_IRQSTAT_ERROR);
+  return future::make_ready_future<bool>((m_irqstat & SDHC_IRQSTAT_TC) && !(m_irqstat & SDHC_IRQSTAT_ERROR));
 }
 //-----------------------------------------------------------------------------
 bool SdioCard::readOCR(uint32_t* ocr) {
@@ -730,7 +757,7 @@ bool SdioCard::writeBlocks(uint32_t lba, const uint8_t* buf, size_t n) {
     }
     return true;
   }
-  if (!rdWrBlocks(CMD25_DMA_XFERTYP, lba, ptr, n)) {
+  if (!rdWrBlocks(CMD25_DMA_XFERTYP, lba, ptr, n).get()) {
     return sdError(SD_CARD_ERROR_CMD25);
   }
   return true;

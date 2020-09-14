@@ -22,6 +22,7 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include "../Future.h"
 #include "SdioCard.h"
 
 // limit of K66 due to errata KINETIS_K_0N65N.
@@ -30,35 +31,44 @@ const uint32_t MAX_SDHC_COUNT = 0XFFFF;
 // Max RU is 1024 blocks.
 const uint32_t RU_MASK = 0X03FF;
 
-bool SdioCardEX::readBlock(uint32_t lba, uint8_t* dst) {
+future::future<bool> SdioCardEX::readBlock(uint32_t lba, uint8_t* dst) {
   if (m_curState != READ_STATE || lba != m_curLba) {
     if (!syncBlocks()) {
-      return false;
+      return future::make_ready_future<bool>(false);
     }
     m_limitLba = (lba + MAX_SDHC_COUNT) & ~RU_MASK;
     if (!SdioCard::readStart(lba, m_limitLba - lba)) {
-      return false;
+      return future::make_ready_future<bool>(false);
     }
     m_curLba = lba;
     m_curState = READ_STATE;
   }
-  if (!SdioCard::readData(dst)) {
-    return false;
-  }
-  m_curLba++;
-  if (m_curLba >= m_limitLba) {
-    m_curState = IDLE_STATE;
-  }
-  return true;
+  return SdioCard::readData(dst).then([this](future::future<bool> f) {
+    if (!f.get()) {
+      return future::make_ready_future<bool>(false);
+    }
+    m_curLba++;
+    if (m_curLba >= m_limitLba) {
+      m_curState = IDLE_STATE;
+    }
+    return future::make_ready_future<bool>(true);
+  });
 }
 //-----------------------------------------------------------------------------
-bool SdioCardEX::readBlocks(uint32_t lba, uint8_t* dst, size_t nb) {
+future::future<bool> SdioCardEX::readBlocks(uint32_t lba, uint8_t* dst, size_t nb) {
+  future::future<bool> cur = future::make_ready_future<bool>(true);
   for (size_t i = 0; i < nb; i++) {
-    if (!readBlock(lba + i, dst + i*512UL)) {
-      return false;
+    if (cur.is_done()) {
+      if (!cur.get()) {
+        return future::make_ready_future<bool>(false);
+      }
     }
+    cur = cur.then([this, dst, lba, i](future::future<bool> f) {
+      if (!f.get()) { return f; }
+      return readBlock(lba + i, dst + i*512UL);
+    });
   }
-  return true;
+  return cur;
 }
 //-----------------------------------------------------------------------------
 bool SdioCardEX::syncBlocks() {

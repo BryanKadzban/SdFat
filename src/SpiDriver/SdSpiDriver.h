@@ -28,6 +28,7 @@
  */
 #ifndef SdSpiDriver_h
 #define SdSpiDriver_h
+#include "../Future.h"
 #include <Arduino.h>
 #include "SPI.h"
 #include "SdSpiBaseDriver.h"
@@ -79,13 +80,14 @@ class SdSpiLibDriver {
   * \param[out] buf Buffer to receive the data.
   * \param[in] n Number of bytes to receive.
   *
-  * \return Zero for no error or nonzero error code.
+  * \return future returning zero for no error or nonzero error code.
   */
-  uint8_t receive(uint8_t* buf, size_t n) {
+  future::future<uint8_t> receive(uint8_t* buf, size_t n) {
     for (size_t i = 0; i < n; i++) {
       buf[i] = m_spi->transfer(0XFF);
     }
-    return 0;
+    // No waiting required
+    return future::make_ready_future<uint8_t>(0);
   }
   /** Send a byte.
    *
@@ -135,13 +137,14 @@ class SdSpiLibDriver {
   * \param[out] buf Buffer to receive the data.
   * \param[in] n Number of bytes to receive.
   *
-  * \return Zero for no error or nonzero error code.
+  * \return vuture returning zero for no error or nonzero error code.
   */
-  uint8_t receive(uint8_t* buf, size_t n) {
+  future::future<uint8_t> receive(uint8_t* buf, size_t n) {
     for (size_t i = 0; i < n; i++) {
       buf[i] = SDCARD_SPI.transfer(0XFF);
     }
-    return 0;
+    // No waiting required
+    return future::make_ready_future<uint8_t>(0);
   }
   /** Send a byte.
    *
@@ -221,9 +224,9 @@ class SdSpiAltDriver {
   * \param[out] buf Buffer to receive the data.
   * \param[in] n Number of bytes to receive.
   *
-  * \return Zero for no error or nonzero error code.
+  * \return future returning zero for no error or nonzero error code.
   */
-  uint8_t receive(uint8_t* buf, size_t n);
+  future::future<uint8_t> receive(uint8_t* buf, size_t n);
   /** Send a byte.
    *
    * \param[in] data Byte to send
@@ -305,13 +308,14 @@ class SdSpiSoftDriver : public SdSpiBaseDriver {
   * \param[out] buf Buffer to receive the data.
   * \param[in] n Number of bytes to receive.
   *
-  * \return Zero for no error or nonzero error code.
+  * \return future returning zero for no error or nonzero error code.
   */
-  uint8_t receive(uint8_t* buf, size_t n) {
+  future::future<uint8_t> receive(uint8_t* buf, size_t n) {
     for (size_t i = 0; i < n; i++) {
       buf[i] = receive();
     }
-    return 0;
+    // No waiting required
+    return future::make_ready_future<uint8_t>(0);
   }
   /** Send a byte.
    *
@@ -394,9 +398,9 @@ inline uint8_t SdSpiAltDriver::receive() {
   return SPDR;
 }
 //------------------------------------------------------------------------------
-inline uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
+inline future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   if (n-- == 0) {
-    return 0;
+    return future::make_ready_future<uint8_t>(0);
   }
   SPDR = 0XFF;
   for (size_t i = 0; i < n; i++) {
@@ -407,7 +411,7 @@ inline uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   }
   while (!(SPSR & (1 << SPIF))) {}
   buf[n] = SPDR;
-  return 0;
+  return new future::make_ready_future<uint8_t>(0);
 }
 //------------------------------------------------------------------------------
 inline void SdSpiAltDriver::send(uint8_t data) {

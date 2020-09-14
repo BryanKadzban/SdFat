@@ -22,6 +22,7 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include "../Future.h"
 #include "SdSpiDriver.h"
 #if defined(__SAM3X8E__) || defined(__SAM3X8H__)
 /** Use SAM3X DMAC if nonzero */
@@ -162,9 +163,9 @@ uint8_t SdSpiAltDriver::receive() {
 }
 //------------------------------------------------------------------------------
 /** SPI receive multiple bytes */
-uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
+future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   Spi* pSpi = SPI0;
-  int rtn = 0;
+  future::future<uint8_t> rtn;
 #if USE_SAM3X_DMAC
   // clear overrun error
   pSpi->SPI_SR;
@@ -173,23 +174,32 @@ uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   spiDmaTX(0, n);
 
   uint32_t m = millis();
-  while (!dmac_channel_transfer_done(SPI_DMAC_RX_CH)) {
+  rtn.set_wait_callback([m](future::future<uint8_t>* f) {
+    if (dmac_channel_transfer_done(SPI_DMAC_RX_CH)) {
+      if (pSpi->SPI_SR & SPI_SR_OVRES) {
+        f->set_result(1);
+      }
+      return true;
+    }
     if ((millis() - m) > SAM3X_DMA_TIMEOUT)  {
       dmac_channel_disable(SPI_DMAC_RX_CH);
       dmac_channel_disable(SPI_DMAC_TX_CH);
-      rtn = 2;
-      break;
+      int res = 2;
+      if (pSpi->SPI_SR & SPI_SR_OVRES) {
+        res |= 1;
+      }
+      f->set_result(res);
+      return true;
     }
-  }
-  if (pSpi->SPI_SR & SPI_SR_OVRES) {
-    rtn |= 1;
-  }
+    return false;
+  });
 #else  // USE_SAM3X_DMAC
   for (size_t i = 0; i < n; i++) {
     pSpi->SPI_TDR = 0XFF;
     while ((pSpi->SPI_SR & SPI_SR_RDRF) == 0) {}
     buf[i] = pSpi->SPI_RDR;
   }
+  rtn = make_ready_future<uint8_t>(0);
 #endif  // USE_SAM3X_DMAC
   return rtn;
 }

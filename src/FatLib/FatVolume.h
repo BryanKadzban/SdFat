@@ -28,6 +28,7 @@
  * \file
  * \brief FatVolume class
  */
+#include "../Future.h"
 #include <stddef.h>
 #include "FatLibConfig.h"
 #include "FatStructs.h"
@@ -143,7 +144,7 @@ class FatCache {
    * \param[in] lbn Block to read.
    * \param[in] option mode for cached block.
    * \return Address of cached block. */
-  cache_t* read(uint32_t lbn, uint8_t option);
+  future::future<cache_t*> read(uint32_t lbn, uint8_t option);
   /** Write current block if dirty.
    * \return true for success else false.
    */
@@ -301,7 +302,7 @@ class FatVolume {
   uint32_t m_rootDirStart;         // Start block for FAT16, cluster for FAT32.
 //------------------------------------------------------------------------------
   // block I/O functions.
-  bool readBlock(uint32_t block, uint8_t* dst) {
+  future::future<bool> readBlock(uint32_t block, uint8_t* dst) {
     return m_blockDev->readBlock(block, dst);
   }
   bool syncBlocks() {
@@ -311,7 +312,7 @@ class FatVolume {
     return m_blockDev->writeBlock(block, src);
   }
 #if USE_MULTI_BLOCK_IO
-  bool readBlocks(uint32_t block, uint8_t* dst, size_t nb) {
+  future::future<bool> readBlocks(uint32_t block, uint8_t* dst, size_t nb) {
     return m_blockDev->readBlocks(block, dst, nb);
   }
   bool writeBlocks(uint32_t block, const uint8_t* src, size_t nb) {
@@ -341,7 +342,7 @@ class FatVolume {
   FatCache m_cache;
 #if USE_SEPARATE_FAT_CACHE
   FatCache m_fatCache;
-  cache_t* cacheFetchFat(uint32_t blockNumber, uint8_t options) {
+  future::future<cache_t*> cacheFetchFat(uint32_t blockNumber, uint8_t options) {
     return m_fatCache.read(blockNumber,
                            options | FatCache::CACHE_STATUS_MIRROR_FAT);
   }
@@ -349,7 +350,7 @@ class FatVolume {
     return m_cache.sync() && m_fatCache.sync() && syncBlocks();
   }
 #else  //
-  cache_t* cacheFetchFat(uint32_t blockNumber, uint8_t options) {
+  future::future<cache_t*> cacheFetchFat(uint32_t blockNumber, uint8_t options) {
     return cacheFetchData(blockNumber,
                           options | FatCache::CACHE_STATUS_MIRROR_FAT);
   }
@@ -357,7 +358,7 @@ class FatVolume {
     return m_cache.sync() && syncBlocks();
   }
 #endif  // USE_SEPARATE_FAT_CACHE
-  cache_t* cacheFetchData(uint32_t blockNumber, uint8_t options) {
+  future::future<cache_t*> cacheFetchData(uint32_t blockNumber, uint8_t options) {
     return m_cache.read(blockNumber, options);
   }
   void cacheInvalidate() {

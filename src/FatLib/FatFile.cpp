@@ -22,6 +22,7 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include "../Future.h"
 #include "FatFile.h"
 #include "FatFileSystem.h"
 //------------------------------------------------------------------------------
@@ -56,7 +57,8 @@ bool FatFile::addDirCluster() {
     goto fail;
   }
   block = m_vol->clusterFirstBlock(m_curCluster);
-  pc = m_vol->cacheFetchData(block, FatCache::CACHE_RESERVE_FOR_WRITE);
+  // NB: synchronous is fine when doing writes
+  pc = m_vol->cacheFetchData(block, FatCache::CACHE_RESERVE_FOR_WRITE).get();
   if (!pc) {
     DBG_FAIL_MACRO;
     goto fail;
@@ -81,7 +83,8 @@ fail:
 // return pointer to cached entry or null for failure
 dir_t* FatFile::cacheDirEntry(uint8_t action) {
   cache_t* pc;
-  pc = m_vol->cacheFetchData(m_dirBlock, action);
+  // NB: synchronous is fine here, since we're doing metadata
+  pc = m_vol->cacheFetchData(m_dirBlock, action).get();
   if (!pc) {
     DBG_FAIL_MACRO;
     goto fail;
@@ -229,7 +232,8 @@ int16_t FatFile::fgets(char* str, int16_t num, char* delim) {
   char ch;
   int16_t n = 0;
   int16_t r = -1;
-  while ((n + 1) < num && (r = read(&ch, 1)) == 1) {
+  // Synchronous is fine here... we're doing one byte at a time anyway.
+  while ((n + 1) < num && (r = read(&ch, 1).get()) == 1) {
     // delete CR
     if (ch == '\r') {
       continue;
@@ -350,7 +354,8 @@ bool FatFile::mkdir(FatFile* parent, fname_t* fname) {
 
   // cache block for '.'  and '..'
   block = m_vol->clusterFirstBlock(m_firstCluster);
-  pc = m_vol->cacheFetchData(block, FatCache::CACHE_FOR_WRITE);
+  // NB: synchronous is fine, we're doing a write operation
+  pc = m_vol->cacheFetchData(block, FatCache::CACHE_FOR_WRITE).get();
   if (!pc) {
     DBG_FAIL_MACRO;
     goto fail;
@@ -651,7 +656,8 @@ bool FatFile::openParent(FatFile* dirFile) {
     return openRoot(dirFile->m_vol);
   }
   lbn = dirFile->m_vol->clusterFirstBlock(dirFile->m_dirCluster);
-  cb = dirFile->m_vol->cacheFetchData(lbn, FatCache::CACHE_FOR_READ);
+  // NB: synchronous is fine here; this is a metadata operation
+  cb = dirFile->m_vol->cacheFetchData(lbn, FatCache::CACHE_FOR_READ).get();
   if (!cb) {
     DBG_FAIL_MACRO;
     goto fail;
@@ -731,19 +737,29 @@ int FatFile::peek() {
   return c;
 }
 //------------------------------------------------------------------------------
-int FatFile::read(void* buf, size_t nbyte) {
-  int8_t fg;
+struct readDesc {
+  uint8_t* dst;
+  uint32_t block;
+  size_t bytes;
+  uint16_t offset;   // within block above
+  bool should_cache;
+
+  readDesc(uint8_t* ptr, uint32_t bl, size_t b, uint16_t off, bool cache)
+    : dst(ptr), block(bl), bytes(b), offset(off), should_cache(cache) {}
+};
+//------------------------------------------------------------------------------
+future::future<int> FatFile::read(void* buf, size_t nbyte) {
   uint8_t blockOfCluster = 0;
   uint8_t* dst = reinterpret_cast<uint8_t*>(buf);
   uint16_t offset;
   size_t toRead;
   uint32_t block;  // raw device block number
-  cache_t* pc;
 
   // error if not open for read
   if (!isOpen() || !(m_flags & F_READ)) {
     DBG_FAIL_MACRO;
-    goto fail;
+    m_error |= READ_ERROR;
+    return future::make_ready_future<int>(-1);
   }
 
   if (isFile()) {
@@ -757,53 +773,61 @@ int FatFile::read(void* buf, size_t nbyte) {
       nbyte = tmp16;
     }
   }
+  if (!nbyte) {
+    return future::make_ready_future<int>(0);
+  }
   toRead = nbyte;
-  while (toRead) {
-    size_t n;
-    offset = m_curPosition & 0X1FF;  // offset in block
-    if (isRootFixed()) {
-      block = m_vol->rootDirStart() + (m_curPosition >> 9);
+  // SETUP
+  uint32_t pos = m_curPosition;
+  uint32_t cluster = m_curCluster;
+  const int8_t OK = 1;
+  const int8_t EOC = 0;
+  const int8_t FAIL = -1;
+  auto getBlock = ([this, &blockOfCluster, &cluster](uint16_t offset, uint32_t pos) {
+    if (this->isRootFixed()) {
+      return std::make_pair(OK, this->m_vol->rootDirStart() + (pos >> 9));
     } else {
-      blockOfCluster = m_vol->blockOfCluster(m_curPosition);
+      blockOfCluster = this->m_vol->blockOfCluster(pos);
       if (offset == 0 && blockOfCluster == 0) {
         // start of new cluster
-        if (m_curPosition == 0) {
+        if (pos == 0) {
           // use first cluster in file
-          m_curCluster = isRoot32() ? m_vol->rootDirStart() : m_firstCluster;
+          cluster = this->isRoot32() ? this->m_vol->rootDirStart() : this->m_firstCluster;
         } else {
           // get next cluster from FAT
-          fg = m_vol->fatGet(m_curCluster, &m_curCluster);
-          if (fg < 0) {
-            DBG_FAIL_MACRO;
-            goto fail;
+          int8_t fg = this->m_vol->fatGet(cluster, &cluster);
+          if (fg == 0 && this->isDir()) {
+            return std::make_pair(EOC, 0UL);
           }
-          if (fg == 0) {
-            if (isDir()) {
-              break;
-            }
+          if (fg <= 0) {
             DBG_FAIL_MACRO;
-            goto fail;
+            return std::make_pair(FAIL, 0UL);
           }
         }
       }
-      block = m_vol->clusterFirstBlock(m_curCluster) + blockOfCluster;
+      return std::make_pair(OK, this->m_vol->clusterFirstBlock(cluster) + blockOfCluster);
     }
+  });
+  std::vector<readDesc> reads;
+  int total_bytes = 0;
+  while (toRead) {
+    offset = pos & 0X1FF;  // offset in block
+    auto ok_block = getBlock(pos, offset);
+    if (ok_block.first == EOC) { break; }
+    if (ok_block.first == FAIL) {
+      m_error |= READ_ERROR;
+      return future::make_ready_future<int>(-1);
+    }
+    readDesc d(dst + total_bytes, ok_block.second, 0, offset, false);
     if (offset != 0 || toRead < 512 || block == m_vol->cacheBlockNumber()) {
       // amount to be read from current block
-      n = 512 - offset;
-      if (n > toRead) {
-        n = toRead;
+      d.bytes = 512 - offset;
+      if (d.bytes > toRead) {
+        d.bytes = toRead;
       }
-      // read block to cache and copy data to caller
-      pc = m_vol->cacheFetchData(block, FatCache::CACHE_FOR_READ);
-      if (!pc) {
-        DBG_FAIL_MACRO;
-        goto fail;
-      }
-      uint8_t* src = pc->data + offset;
-      memcpy(dst, src, n);
-#if USE_MULTI_BLOCK_IO
-    } else if (toRead >= 1024) {
+      d.should_cache = true;
+    } else {
+      // read in units of blocks
       size_t nb = toRead >> 9;
       if (!isRootFixed()) {
         uint8_t mb = m_vol->blocksPerCluster() - blockOfCluster;
@@ -811,37 +835,63 @@ int FatFile::read(void* buf, size_t nbyte) {
           nb = mb;
         }
       }
-      n = 512*nb;
+      d.bytes = nb << 9;
+      // flush cache if a block is in the cache
       if (m_vol->cacheBlockNumber() <= block
           && block < (m_vol->cacheBlockNumber() + nb)) {
-        // flush cache if a block is in the cache
         if (!m_vol->cacheSyncData()) {
           DBG_FAIL_MACRO;
-          goto fail;
+          m_error |= READ_ERROR;
+          return future::make_ready_future<int>(-1);
         }
       }
-      if (!m_vol->readBlocks(block, dst, nb)) {
-        DBG_FAIL_MACRO;
-        goto fail;
-      }
-#endif  // USE_MULTI_BLOCK_IO
-    } else {
-      // read single block
-      n = 512;
-      if (!m_vol->readBlock(block, dst)) {
-        DBG_FAIL_MACRO;
-        goto fail;
-      }
     }
-    dst += n;
-    m_curPosition += n;
-    toRead -= n;
+    reads.push_back(d);
+    total_bytes += d.bytes;
+    toRead -= d.bytes;
+    pos += d.bytes;
   }
-  return nbyte - toRead;
-
-fail:
-  m_error |= READ_ERROR;
-  return -1;
+  future::future<int> cur = future::make_ready_future<int>(0);
+  for (auto& d : reads) {
+    if (d.should_cache) {
+      cur = cur.then([this, d, tb = total_bytes](future::future<int> f) {
+        if (f.get() < 0) { return f; }
+        // read block to cache and copy data to caller
+        return m_vol->cacheFetchData(d.block, FatCache::CACHE_FOR_READ)
+          .then([this, d, tb](future::future<cache_t*> f) {
+            if (!f.get()) {
+              DBG_FAIL_MACRO;
+              m_error |= READ_ERROR;
+              return future::make_ready_future<int>(-1);
+            }
+            uint8_t* src = f.get()->data + d.offset;
+            memcpy(d.dst, src, d.bytes);
+            size_t tot = tb;
+            return future::make_ready_future<int>(tot);
+          });
+      });
+    } else {
+      cur = cur.then([this, d, tb = total_bytes](future::future<int> f) {
+        if (f.get() < 0) { return f; }
+        return m_vol->readBlocks(d.block, d.dst, d.bytes >> 9)
+          .then([this, tb](future::future<bool> f) {
+            if (!f.get()) {
+              DBG_FAIL_MACRO;
+              m_error |= READ_ERROR;
+              return future::make_ready_future<int>(-1);
+            }
+            size_t tot = tb;
+            return future::make_ready_future<int>(tot);
+          });
+      });
+    }
+  }
+  return cur.then([this, pos](future::future<int> f) {
+    if (f.get() >= 0) {
+      m_curPosition = pos;
+    }
+    return f;
+  });
 }
 //------------------------------------------------------------------------------
 int8_t FatFile::readDir(dir_t* dir) {
@@ -852,7 +902,8 @@ int8_t FatFile::readDir(dir_t* dir) {
   }
 
   while (1) {
-    n = read(dir, sizeof(dir_t));
+    // NB: Sync here is fine since this is a metadata operation
+    n = read(dir, sizeof(dir_t)).get();
     if (n != sizeof(dir_t)) {
       return n == 0 ? 0 : -1;
     }
@@ -878,7 +929,7 @@ dir_t* FatFile::readDirCache(bool skipReadOk) {
   uint8_t i = (m_curPosition >> 5) & 0XF;
 
   if (i == 0 || !skipReadOk) {
-    int8_t n = read(&n, 1);
+    int8_t n = read(&n, 1).get();
     if  (n != 1) {
       if (n != 0) {
         DBG_FAIL_MACRO;
@@ -980,7 +1031,10 @@ bool FatFile::rename(FatFile* dirFile, const char* newPath) {
   if (dirCluster) {
     // get new dot dot
     uint32_t block = m_vol->clusterFirstBlock(dirCluster);
-    pc = m_vol->cacheFetchData(block, FatCache::CACHE_FOR_READ);
+    // NB: synchronous is fine here; this is both a write operation and
+    // happening to metadata, and async is only needed for read operations
+    // on data.
+    pc = m_vol->cacheFetchData(block, FatCache::CACHE_FOR_READ).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -994,7 +1048,7 @@ bool FatFile::rename(FatFile* dirFile, const char* newPath) {
     }
     // store new dot dot
     block = m_vol->clusterFirstBlock(m_firstCluster);
-    pc = m_vol->cacheFetchData(block, FatCache::CACHE_FOR_WRITE);
+    pc = m_vol->cacheFetchData(block, FatCache::CACHE_FOR_WRITE).get();
     if (!pc) {
       DBG_FAIL_MACRO;
       goto fail;
@@ -1459,7 +1513,8 @@ int FatFile::write(const void* buf, size_t nbyte) {
         // rewrite part of block
         cacheOption = FatCache::CACHE_FOR_WRITE;
       }
-      pc = m_vol->cacheFetchData(block, cacheOption);
+      // NB: synchronous is fine here; this is a write operation
+      pc = m_vol->cacheFetchData(block, cacheOption).get();
       if (!pc) {
         DBG_FAIL_MACRO;
         goto fail;

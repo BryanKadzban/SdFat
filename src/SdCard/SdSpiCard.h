@@ -28,6 +28,7 @@
  * \file
  * \brief SdSpiCard class for V2 SD/SDHC cards
  */
+#include "../Future.h"
 #include <stddef.h>
 #include "SysCall.h"
 #include "SdInfo.h"
@@ -117,7 +118,7 @@ class SdSpiCard {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlock(uint32_t lba, uint8_t* dst);
+  future::future<bool> readBlock(uint32_t lba, uint8_t* dst);
   /**
    * Read multiple 512 byte blocks from an SD card.
    *
@@ -127,7 +128,7 @@ class SdSpiCard {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlocks(uint32_t lba, uint8_t* dst, size_t nb);
+  future::future<bool> readBlocks(uint32_t lba, uint8_t* dst, size_t nb);
   /**
    * Read a card's CID register. The CID contains card identification
    * information such as Manufacturer ID, Product name, Product serial
@@ -155,10 +156,9 @@ class SdSpiCard {
    *
    * \param[out] dst Pointer to the location for the data to be read.
    *
-   * \return The value true is returned for success and
-   * the value false is returned for failure.
+   * \return A future returning true for success and false for failure.
    */
-  bool readData(uint8_t *dst);
+  future::future<bool> readData(uint8_t *dst);
   /** Read OCR register.
    *
    * \param[out] ocr Value of OCR register.
@@ -264,7 +264,7 @@ class SdSpiCard {
   }
   uint8_t cardCommand(uint8_t cmd, uint32_t arg);
   bool isTimedOut(uint16_t startMS, uint16_t timeoutMS);
-  bool readData(uint8_t* dst, size_t count);
+  future::future<bool> readData(uint8_t* dst, size_t count);
   bool readRegister(uint8_t cmd, void* buf);
 
   void type(uint8_t value) {
@@ -285,7 +285,7 @@ class SdSpiCard {
   uint8_t spiReceive() {
     return m_spiDriver->receive();
   }
-  uint8_t spiReceive(uint8_t* buf, size_t n) {
+  future::future<uint8_t> spiReceive(uint8_t* buf, size_t n) {
     return  m_spiDriver->receive(buf, n);
   }
   void spiSend(uint8_t data) {
@@ -333,7 +333,7 @@ class SdSpiCardEX : public SdSpiCard {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlock(uint32_t block, uint8_t* dst);
+  future::future<bool> readBlock(uint32_t block, uint8_t* dst);
   /** End multi-block transfer and go to idle state.
    * \return The value true is returned for success and
    * the value false is returned for failure.
@@ -357,7 +357,7 @@ class SdSpiCardEX : public SdSpiCard {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  bool readBlocks(uint32_t block, uint8_t* dst, size_t nb);
+  future::future<bool> readBlocks(uint32_t block, uint8_t* dst, size_t nb);
   /**
    * Write multiple 512 byte blocks to an SD card.
    *

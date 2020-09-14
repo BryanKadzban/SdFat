@@ -22,6 +22,7 @@
  * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
  * DEALINGS IN THE SOFTWARE.
  */
+#include "../Future.h"
 #include "SdSpiDriver.h"
 #if defined(__arm__) && defined(CORE_TEENSY)
 // SPI definitions
@@ -70,7 +71,7 @@ uint8_t SdSpiAltDriver::receive() {
 }
 //------------------------------------------------------------------------------
 /** SPI receive multiple bytes */
-uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
+future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   // clear any data in RX FIFO
   SPI0_MCR = SPI_MCR_MSTR | SPI_MCR_CLR_RXF | SPI_MCR_PCSIS(0x1F);
 #if SPI_USE_8BIT_FRAME
@@ -121,7 +122,7 @@ uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
     *buf++ = w & 0XFF;
   }
 #endif  // SPI_USE_8BIT_FRAME
-  return 0;
+  return make_ready_future<uint8_t>(0);
 }
 //------------------------------------------------------------------------------
 /** SPI send a byte */
@@ -206,11 +207,11 @@ uint8_t SdSpiAltDriver::receive() {
  *
  * \return Zero for no error or nonzero error code.
  */
-uint8_t SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
+future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   for (size_t i = 0; i < n; i++) {
     buf[i] = SPI.transfer(0XFF);
   }
-  return 0;
+  return future::make_ready_future<uint8_t>(0);
 }
 /** Send a byte.
  *

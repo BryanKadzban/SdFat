@@ -24,6 +24,7 @@
  */
 #ifndef BaseBlockDriver_h
 #define BaseBlockDriver_h
+#include "../Future.h"
 #include "FatLibConfig.h"
 /**
  * \class BaseBlockDriver
@@ -39,7 +40,7 @@ class BaseBlockDriver {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  virtual bool readBlock(uint32_t block, uint8_t* dst) = 0;
+  virtual future::future<bool> readBlock(uint32_t block, uint8_t* dst) = 0;
   /** End multi-block transfer and go to idle state.
    * \return The value true is returned for success and
    * the value false is returned for failure.
@@ -64,7 +65,7 @@ class BaseBlockDriver {
    * \return The value true is returned for success and
    * the value false is returned for failure.
    */
-  virtual bool readBlocks(uint32_t block, uint8_t* dst, size_t nb) = 0;
+  virtual future::future<bool> readBlocks(uint32_t block, uint8_t* dst, size_t nb) = 0;
   /**
    * Write multiple 512 byte blocks to an SD card.
    *
