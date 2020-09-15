@@ -28,6 +28,7 @@
  * \file
  * \brief SdFat class
  */
+#include "Future.h"
 #include "SysCall.h"
 #include "BlockDriver.h"
 #include "FatLib/FatLib.h"
