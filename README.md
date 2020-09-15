@@ -1,9 +1,12 @@
-The Arduino SdFat library provides read/write access to FAT16/FAT32
-file systems on SD/SDHC flash cards.
+The Arduino SdFatAsync library provides read/write access to FAT16/FAT32
+file systems on SD/SDHC flash cards, with async read capability.
 
 SdFat requires Arduino 1.6x or greater.
 
 Key changes:
+
+FatFile::read returns a future, which can be polled if the SPI/SD/SDHC
+transfer happens in the background.
 
 Support for multiple SPI ports now uses a pointer to a SPIClass object.
 
@@ -39,4 +42,4 @@ SdFile, File, StdioStream, ifstream, ofstream, and others.
  
 Please continue by reading the html documentation in SdFat/extras/html
 
-Updated 28 Dec 2018
+Updated 14 September 2020
