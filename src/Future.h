@@ -49,20 +49,15 @@ namespace future {
   class unique_irqlock {
     public:
       unique_irqlock() : m_needs_enable(irqs_enabled()) {
-        __asm__ volatile ( "cpsid i" : : : "memory" );
+        __disable_irq();
       }
-      ~unique_irqlock() { if (m_needs_enable) { __asm__ volatile ( "cpsid i" : : : "memory" ); } }
+      ~unique_irqlock() { if (m_needs_enable) { __enable_irq(); } }
       unique_irqlock(const unique_irqlock& rhs) = delete;
       unique_irqlock& operator=(const unique_irqlock& rhs) = delete;
 
     private:
       bool irqs_enabled() {
-        uint32_t primask;
-        __asm__ volatile (
-          "mrs %[mask], PRIMASK"
-          : [mask] "=r"(primask)  // outs; no ins, no clobbers
-        );
-        return (primask & 1) == 1;
+        return (__get_PRIMASK() & 1) == 1;
       }
       bool m_needs_enable;
   };
@@ -209,13 +204,13 @@ namespace future {
         }
       }
 
-      template<typename F>
-      inline future<typename std::result_of<F(future)>::type::value_type>
-      then(F&& func) {
-        typedef typename std::result_of<F(future)>::type::value_type then_future_ret;
+      template<typename Func>
+      inline future<typename std::result_of<Func(future)>::type::value_type>
+      then(Func&& func) {
+        typedef typename std::result_of<Func(future)>::type::value_type then_future_ret;
 
         return detail::make_continuation_future<then_future_ret>(
-            std::move(*this), std::forward<F>(func)
+            std::move(*this), std::forward<Func>(func)
         );
       }
       void set_value(R&& r) {
