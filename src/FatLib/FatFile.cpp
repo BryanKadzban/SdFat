@@ -671,7 +671,8 @@ bool FatFile::openParent(FatFile* dirFile) {
       goto fail;
     }
   } else {
-    memset(&dotdot, 0, sizeof(FatFile));
+    // totally unnecessary; C++ does this for us
+    //memset(&dotdot, 0, sizeof(FatFile));
     dotdot.m_attr = FILE_ATTR_SUBDIR;
     dotdot.m_flags = F_READ;
     dotdot.m_vol = dirFile->m_vol;
@@ -747,13 +748,15 @@ struct readDesc {
   readDesc(uint8_t* ptr, uint32_t bl, size_t b, uint16_t off, bool cache)
     : dst(ptr), block(bl), bytes(b), offset(off), should_cache(cache) {}
 };
+const int8_t OK = 1;
+const int8_t EOC = 0;
+const int8_t FAIL = -1;
 //------------------------------------------------------------------------------
 future::future<int> FatFile::read(void* buf, size_t nbyte) {
   uint8_t blockOfCluster = 0;
   uint8_t* dst = reinterpret_cast<uint8_t*>(buf);
   uint16_t offset;
   size_t toRead;
-  uint32_t block;  // raw device block number
 
   // error if not open for read
   if (!isOpen() || !(m_flags & F_READ)) {
@@ -780,9 +783,6 @@ future::future<int> FatFile::read(void* buf, size_t nbyte) {
   // SETUP
   uint32_t pos = m_curPosition;
   uint32_t cluster = m_curCluster;
-  const int8_t OK = 1;
-  const int8_t EOC = 0;
-  const int8_t FAIL = -1;
   auto getBlock = ([this, &blockOfCluster, &cluster](uint16_t offset, uint32_t pos) {
     if (this->isRootFixed()) {
       return std::make_pair(OK, this->m_vol->rootDirStart() + (pos >> 9));
@@ -819,7 +819,7 @@ future::future<int> FatFile::read(void* buf, size_t nbyte) {
       return future::make_ready_future<int>(-1);
     }
     readDesc d(dst + total_bytes, ok_block.second, 0, offset, false);
-    if (offset != 0 || toRead < 512 || block == m_vol->cacheBlockNumber()) {
+    if (offset != 0 || toRead < 512 || d.block == m_vol->cacheBlockNumber()) {
       // amount to be read from current block
       d.bytes = 512 - offset;
       if (d.bytes > toRead) {
@@ -837,8 +837,8 @@ future::future<int> FatFile::read(void* buf, size_t nbyte) {
       }
       d.bytes = nb << 9;
       // flush cache if a block is in the cache
-      if (m_vol->cacheBlockNumber() <= block
-          && block < (m_vol->cacheBlockNumber() + nb)) {
+      if (m_vol->cacheBlockNumber() <= d.block
+          && d.block < (m_vol->cacheBlockNumber() + nb)) {
         if (!m_vol->cacheSyncData()) {
           DBG_FAIL_MACRO;
           m_error |= READ_ERROR;

@@ -34,6 +34,7 @@
 #include <functional>
 #include <type_traits>
 #include <memory>
+#include <nrf52840.h>
 
 /// API required:
 ///  already_done_future(uint8_t | bool)
@@ -41,7 +42,7 @@
 ///  dma_future, which takes a callback to check the done status and allows setting the value
 ///     -> future(), then set_done_callback (must allocate state_)
 ///  wrapped_future, which always leaves done true, but does reinterpret the value
-///     -> f.then(||(*fut) { xxxxx.set_value(fut->get() == 0; })
+///     -> f.then(||(*fut) { return make_ready_future<bool>(fut->get() == 0); })
 ///  chained_read_future, which takes a callback to return another future to wait on
 ///     -> f.then(||(*fut) { return do_next_read(); })
 
