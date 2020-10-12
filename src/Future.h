@@ -77,32 +77,117 @@ namespace future {
   template <typename T> class future;
 
   namespace detail {
-    struct shared_state {
-      std::vector<shared_state*> continuations;  // owned by their parent futures
+    // A note on the structure here...
+    //
+    // Sadly we require a split-out shared_state so that continuations work;
+    // without the split-out class, the value_type of the future returned by the
+    // continuation callback would have to be the same as the current future's
+    // value_type.  That is, it would not be possible to use .then() to convert
+    // from one value_type to another.
+    //
+    // We require holding the done bit and the return value in the shared state
+    // (and not in the future itself) because putting it into the future means
+    // it's not possible for the continuation to hoist the return value from the
+    // future that the callback returns, into the future that it's operating on
+    // -- because the continuation shared state can't refer to the future that
+    // owns it, because the future gets moved around on the stack.
+    //
+    // We require a non-templated shared_state_base so that continuations can
+    // simply be a vector of pointers to something; it's not possible to have
+    // different template args on the pointer types in the vector, so we need a
+    // template-free type.  Fortunately the continuation handling does not need
+    // to mess with the return value or done bit directly.
+    //
+    // But the is_done() handling needs to be split between the future and the
+    // shared_state<R>, because the done_callback_ needs to take a pointer to
+    // the future that it refers to (so that the user can set the return value
+    // when the operation is done), and the shared_state<R> doesn't have any
+    // way to get at the future<R>.
+    //
+    // So the structure is:
+    //   shared_state_base            <- handles continuatons
+    //   shared_state<R>              <- stores return value and done bit
+    //   continuation_shared_state<R> <- stores preconditions
+    //   future<R>   <- handles done_callback_, delegates to a shared_state<R>*
+    //
+    // That shared_state<R>* (actually a unique_ptr) might contain either a
+    // vanilla shared_state<R>, or a continuation_shared_state<R> that handles
+    // invoking continuations.
 
-      shared_state():
-          continuations() {}
-      shared_state(shared_state const&) = delete;
-      shared_state& operator=(shared_state const&) = delete;
+    struct shared_state_base {
+      std::vector<shared_state_base*> continuations_;  // owned by their parent futures
 
-      virtual ~shared_state() {}
+      shared_state_base()
+        : continuations_() {}
+      shared_state_base(shared_state_base const&) = delete;
+      shared_state_base& operator=(shared_state_base const&) = delete;
 
-      virtual void launch_continuation() {}
+      virtual ~shared_state_base() {}
       virtual bool prereqs_done() { return true; }
 
+      virtual void launch_continuation() {}
+
       void do_continuation() {
-        if (! this->continuations.empty()) {
-          std::vector<shared_state*> the_continuations(std::move(this->continuations));
-          this->continuations.clear();
+        if (!continuations_.empty()) {
+          std::vector<shared_state_base*> the_continuations(std::move(continuations_));
+          continuations_.clear();
           for (auto* cont : the_continuations) {
             cont->launch_continuation();
           }
         }
       }
 
-      void set_continuation_ptr(shared_state* continuation) {
+      void set_continuation_ptr(shared_state_base* continuation) {
         unique_irqlock lock();
-        continuations.push_back(continuation);
+        continuations_.push_back(continuation);
+      }
+    };
+
+    template <typename R>
+    struct shared_state : public shared_state_base {
+      bool done_;
+      R result_;
+
+      shared_state()
+        : shared_state_base(),
+          done_(false),
+          result_() {}
+      shared_state(shared_state const&) = delete;
+      shared_state& operator=(shared_state const&) = delete;
+
+      ~shared_state() override {}
+
+      void set_done() {
+        volatile_store(&done_, true);
+      }
+
+      bool is_done() {
+        // Ruleset:
+        //  If we've been given a callback, use and latch it; higher futures don't get a callback
+        //  If we have prereqs (in the state), make sure all of them are done first.
+        //  If during that process our alt_callback gets inited, make sure it's done.
+        //  If all of them are done, wait for our own flag to be set.
+        //
+        // We've handled the callback in future::is_done, so only handle the
+        // rest of the options here.
+        if (!prereqs_done()) { return false; }
+        return volatile_load(&done_);
+      }
+      void mark_finished_with_result(R&& result) {
+        result_ = std::move(result);
+        set_done();
+        do_continuation();
+      }
+
+      R get() {
+        return std::move(result_);
+      }
+
+      void set_continuation_ptr(shared_state_base* continuation) {
+        shared_state_base::set_continuation_ptr(continuation);
+        if (is_done()) {
+          do_continuation();
+        }
       }
     };
   }
@@ -119,7 +204,7 @@ namespace future {
   template <typename R>
   class future {
     private:
-      typedef std::unique_ptr<detail::shared_state> state_ptr;
+      typedef std::unique_ptr<detail::shared_state<R>> state_ptr;
 
       template<typename Return, typename PreconditionFuture, typename ContinuationF>
       friend future<Return>
@@ -128,12 +213,11 @@ namespace future {
       friend struct detail::continuation_shared_state;
 
       explicit future(state_ptr&& state)
-        : state_(std::move(state)) {}
+        : state_(std::move(state)),
+          done_callback_() {}
 
-      bool done_;
-      std::function<bool(future*)> done_callback_;
-      R result_;
       state_ptr state_;
+      std::function<bool(future<R>*)> done_callback_;
 
     public:
       future(future const&) = delete;
@@ -141,41 +225,39 @@ namespace future {
       typedef R value_type;
 
       constexpr future()
-        : state_(std::make_unique<detail::shared_state>()) {}
+        : state_(std::make_unique<detail::shared_state<R>>()),
+          done_callback_() {}
 
       ~future() {}
 
       future(future&& other)
-        : done_(std::move(other.done_)),
-        done_callback_(std::move(other.done_callback_)),
-        result_(std::move(other.result_)),
-        state_(std::move(other.state_)) {}
+        : state_(std::move(other.state_)),
+          done_callback_(std::move(other.done_callback_)) {}
 
       future& operator=(future&& other) {
-        done_ = std::move(other.done_);
-        done_callback_ = std::move(other.done_callback_);
-        result_ = std::move(other.result_);
         state_ = std::move(other.state_);
+        done_callback_ = std::move(other.done_callback_);
         return *this;
       }
+
       bool is_done() {
         // Ruleset:
         //  If we've been given a callback, use and latch it; higher futures don't get a callback
         //  If we have prereqs (in the state), make sure all of them are done first.
         //  If during that process our alt_callback gets inited, make sure it's done.
-        //  If all of them are done, wait four our own flag to be set.
+        //  If all of them are done, wait for our own flag to be set.
+        //
+        // Handle the callback here since it takes a pointer to the future;
+        // handle the rest of the options in the shared_state::is_done.
         if (done_callback_) {
           if (!done_callback_(this)) {
             return false;
           }
-          set_done();
+          state_->set_done();
+          done_callback_ = std::function<bool(future*)>();
           return true;
         }
-        if (state_ && !state_->prereqs_done()) { return false; }
-        return volatile_load(&done_);
-      }
-      void set_done() {
-        volatile_store(&done_, true);
+        return state_->is_done();
       }
       template<typename F>
       void set_done_callback(F&& f) {
@@ -184,25 +266,17 @@ namespace future {
       void wait() {
         // TODO: should we wfi here?  will that break particle deviceos?
         while (!is_done()) {}
-        //waiters.wait(lk, boost::bind(&shared_state_base::is_done, boost::ref(*this)));
       }
 
       void mark_finished_with_result(R&& result) {
-        result_ = std::move(result);
-        set_done();
-        state_->do_continuation();
+        state_->mark_finished_with_result(std::forward<R>(result));
+        done_callback_ = std::function<bool(future*)>();
       }
 
-      R get() {
-        wait();
-        return std::move(result_);
-      }
+      R get() { wait(); return state_->get(); }
 
-      void set_continuation_ptr(detail::shared_state* continuation) {
+      void set_continuation_ptr(detail::shared_state_base* continuation) {
         state_->set_continuation_ptr(continuation);
-        if (is_done()) {
-          state_->do_continuation();
-        }
       }
 
       template<typename Func>
@@ -211,11 +285,8 @@ namespace future {
         typedef typename std::result_of<Func(future)>::type::value_type then_future_ret;
 
         return detail::make_continuation_future<then_future_ret>(
-            std::move(*this), std::forward<Func>(func)
+          std::move(*this), std::forward<Func>(func)
         );
-      }
-      void set_value(R&& r) {
-        mark_finished_with_result(std::move(r));
       }
   };
 
@@ -225,29 +296,32 @@ namespace future {
   template <class T>
   future<T> make_ready_future(typename std::remove_reference<T>::type & x) {
     future<T> f;
-    f.set_value(x);
+    f.mark_finished_with_result(x);
     return f;
   }
 
   template <class T>
   future<T> make_ready_future(typename std::remove_reference<T>::type&& x) {
     future<T> f;
-    f.set_value(std::forward<typename std::remove_reference<T>::type>(x));
+    f.mark_finished_with_result(std::forward<typename std::remove_reference<T>::type>(x));
     return f;
   }
 
   namespace detail {
     //////////////////////
     template<typename Return, typename PreconditionFuture, typename ContinuationF>
-    struct continuation_shared_state: shared_state {
+    struct continuation_shared_state : public shared_state<Return> {
       PreconditionFuture precondition_;
       ContinuationF continuation_;
       future<Return> alt_precondition_;
 
+      // NB: Because precondition is a reference, not just a rust style move,
+      // changing it down in launch_continuation overwrites the state_ on the
+      // original future.  Handle this in future::set_continuation_ptr.
       continuation_shared_state(PreconditionFuture&& precondition, ContinuationF&& c)
       : precondition_(std::move(precondition)),
         continuation_(std::move(c)),
-        alt_precondition_(std::unique_ptr<shared_state>()) {}
+        alt_precondition_(std::unique_ptr<shared_state<Return>>(nullptr)) {}
 
       void init() {
         precondition_.set_continuation_ptr(this);
@@ -264,13 +338,19 @@ namespace future {
           return precondition_.is_done();
         }
         if (alt_precondition_.state_) {
-          return alt_precondition_.is_done();
+          if (!alt_precondition_.is_done()) {
+            return false;
+          }
+          shared_state<Return>::mark_finished_with_result(alt_precondition_.get());
         }
         return true;
       }
       void launch_continuation() override {
+        //typename PreconditionFuture::value_type res = precondition_.result_;
         alt_precondition_ = continuation_(std::move(precondition_));
-        precondition_ = PreconditionFuture(std::unique_ptr<shared_state>()); // be sure to clear it
+        precondition_ = PreconditionFuture(std::unique_ptr<shared_state<typename PreconditionFuture::value_type>>(nullptr)); // be sure to clear it
+        //precondition_.result_ = res;
+        //precondition_.set_done();
       }
     };
 
@@ -280,7 +360,7 @@ namespace future {
     template<typename Return, typename PreconditionFuture, typename ContinuationF>
     future<Return>
     make_continuation_future(PreconditionFuture&& f, ContinuationF&& c) {
-      auto h = std::make_unique<continuation_shared_state<Return, PreconditionFuture, ContinuationF> >(std::move(f), std::move(c));
+      auto h = std::make_unique<continuation_shared_state<Return, PreconditionFuture, ContinuationF> >(std::forward<PreconditionFuture>(f), std::forward<ContinuationF>(c));
       h->init();
 
       return future<Return>(std::move(h));

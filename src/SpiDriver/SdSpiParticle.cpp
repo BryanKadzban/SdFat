@@ -78,7 +78,7 @@ future::future<uint8_t> SdSpiAltDriver::receive(uint8_t* buf, size_t n) {
   //while (!SPI_DMA_TransferCompleted) {}
   future::future<uint8_t> fut;
   fut.set_done_callback([](future::future<uint8_t>* f) {
-                  if (SPI_DMA_TransferCompleted) { f->set_value(0); return true; }
+                  if (SPI_DMA_TransferCompleted) { f->mark_finished_with_result(0); return true; }
                   return false;
                 });
   return fut;
