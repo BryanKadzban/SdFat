@@ -851,6 +851,8 @@ future::future<int> FatFile::read(void* buf, size_t nbyte) {
     toRead -= d.bytes;
     pos += d.bytes;
   }
+  m_curCluster = cluster;
+  m_curPosition = pos;
   future::future<int> cur = future::make_ready_future<int>(0);
   for (auto& d : reads) {
     if (d.should_cache) {
