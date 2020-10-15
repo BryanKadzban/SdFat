@@ -812,7 +812,7 @@ future::future<int> FatFile::read(void* buf, size_t nbyte) {
   int total_bytes = 0;
   while (toRead) {
     offset = pos & 0X1FF;  // offset in block
-    auto ok_block = getBlock(pos, offset);
+    auto ok_block = getBlock(offset, pos);
     if (ok_block.first == EOC) { break; }
     if (ok_block.first == FAIL) {
       m_error |= READ_ERROR;
